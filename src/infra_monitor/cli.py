@@ -14,11 +14,17 @@ Run it in any of these ways:
     # if installed with `pip install -e .`
     infra-monitor
 
+By default it monitors continuously, printing a fresh report every
+--interval seconds until you stop it with Ctrl+C. Use --once for a single
+snapshot.
+
 Common options:
 
+    python -m infra_monitor.cli                      # monitor until Ctrl+C
+    python -m infra_monitor.cli --interval 5         # report every 5 seconds
+    python -m infra_monitor.cli --once              # one snapshot, then exit
     python -m infra_monitor.cli --limit 10          # show last 10 snapshots
     python -m infra_monitor.cli --no-save           # don't write to the db
-    python -m infra_monitor.cli --watch --interval 5  # keep collecting
 """
 
 from __future__ import annotations
@@ -27,88 +33,141 @@ import argparse
 import os
 import sys
 import time
+from typing import Optional
 
 # --- Make direct execution work (python src/infra_monitor/cli.py) ----------
 # When run as a plain script, the "infra_monitor" package isn't on sys.path,
 # so the imports below would fail. Add the "src" directory (this file's
 # grandparent) to sys.path so the package resolves either way.
 try:
-    from infra_monitor.collector import collect_metric
-    from infra_monitor.models import Metric
-    from infra_monitor.storage import MetricsStorage
+    from infra_monitor.collector import collect_samples
+    from infra_monitor.models import MetricKind, Sample
+    from infra_monitor.storage import SampleStorage
 except ModuleNotFoundError:  # pragma: no cover - exercised only on direct run
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from infra_monitor.collector import collect_metric
-    from infra_monitor.models import Metric
-    from infra_monitor.storage import MetricsStorage
+    from infra_monitor.collector import collect_samples
+    from infra_monitor.models import MetricKind
+    from infra_monitor.storage import SampleStorage
 
 
-def default_disk_path() -> str:
-    """Pick a sensible disk path to check for the current OS.
 
-    psutil.disk_usage("/") raises on Windows, so default to the system drive
-    there (typically C:\\) and to the filesystem root elsewhere.
-    """
-    if os.name == "nt":
-        return os.environ.get("SystemDrive", "C:") + "\\"
-    return "/"
+def human_bytes(n: float) -> str:
+    """Render a byte count as a human-readable string (B, KB, MB, ...)"""
 
+    value = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if abs(value) < 1024.0 or unit == "PB":
+            return f"{value:,.0f} B" if unit == "B" else f"{value:,.1f} {unit}"
 
-def _fmt_row(label: str, value: float) -> str:
-    """Format one metric line with a tiny inline bar for quick scanning."""
-    filled = int(round(value / 10))  # 0..10 blocks
-    filled = max(0, min(10, filled))
-    bar = "#" * filled + "." * (10 - filled)
-    return f"  {label:<5} {value:5.1f}%  [{bar}]"
+        value /= 1024.0
+    return f"{value:,.1f} PB"
 
 
-def format_report(current: Metric, recent: list[Metric], db_path: str) -> str:
-    """Build the human-readable monitoring report string."""
+def _percent_bar(value: float, width: int = 10) -> str:
+    filled = max(0, min(width, int(round(value / (100.0 / width)))))
+    return "#" * filled + "." * (width - filled)
+ 
+
+def compute_rates(current: list[Sample], previous: list[Sample]) -> dict[str, float]:
+
+    prev_by_series = {s.series_key: s for s in previous if s.kind is MetricKind.COUNTER}
+    rates: dict[str, float] = {}
+    for s in current:
+        if s.kind is not MetricKind.COUNTER:
+            continue
+        prev = prev_by_series.get(s.series_key)
+        if prev is None:
+            continue
+        dt = (s.timestamp - prev.timestamp).total_seconds()
+        if dt <= 0:
+            continue
+        delta = s.value - prev.value
+        if delta < 0:  # counter reset -> can't compute a meaningful rate
+            continue
+        rates[s.series_key] = delta / dt
+    return rates
+
+
+def _display_value(s: Sample, rates: dict[str, float]) -> str:
+    """Human-readable value for one sample, given any computed rates."""
+
+    if s.unit == "percent":
+        return f"{s.value:5.1f}%  [{_percent_bar(s.value)}]"
+    if s.kind is MetricKind.COUNTER:
+        rate = rates.get(s.series_key)
+        if rate is not None:
+            if s.unit == "bytes":
+                return f"{human_bytes(rate)}/s"
+            return f"{rate:,.0f} {s.unit}/s".strip()
+        # No previous cycle yet: show the running total instead of a rate.
+        if s.unit == "bytes":
+            return f"{human_bytes(s.value)} total"
+        return f"{s.value:,.0f} {s.unit} total".strip()
+    # Non-percent gauge.
+    if s.unit == "bytes":
+        return human_bytes(s.value)
+    return f"{s.value:,.0f} {s.unit}".strip()
+
+
+def _label_suffix(s: Sample) -> str:
+
+    if not s.labels:
+        return ""
+    return " {" + ", ".join(f"{k}={v}" for k, v in s.labels) + "}"
+
+
+def format_report(
+    samples: list[Sample],
+    db_path: str,
+    rates: Optional[dict[str, float]] = None,
+) -> str:
+    """Build the grouped monitoring report string."""
+    
+    rates = rates or {}
+    width = 44
     lines: list[str] = []
-    lines.append("=" * 44)
+    lines.append("=" * width)
     lines.append(" Infrastructure Monitoring Report")
-    lines.append("=" * 44)
-    lines.append(
-        f" Taken:    {current.timestamp.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}"
-    )
+    lines.append("=" * width)
+    if samples:
+        stamp = samples[0].timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        lines.append(f" Taken:    {stamp}")
     lines.append(f" Database: {db_path}")
-    lines.append("-" * 44)
-    lines.append(" Current snapshot:")
-    lines.append(_fmt_row("CPU", current.cpu_percent))
-    lines.append(_fmt_row("MEM", current.mem_percent))
-    lines.append(_fmt_row("DISK", current.disk_percent))
-
-    if len(recent) > 1:
-        lines.append("-" * 44)
-        lines.append(f" Recent history (newest first, up to {len(recent)}):")
-        lines.append(f"   {'time':<19}  {'cpu':>6} {'mem':>6} {'disk':>6}")
-        for m in recent:
-            ts = m.timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            lines.append(
-                f"   {ts:<19}  {m.cpu_percent:5.1f}% {m.mem_percent:5.1f}% {m.disk_percent:5.1f}%"
-            )
-
-    lines.append("=" * 44)
+    lines.append(f" Samples:  {len(samples)}")
+ 
+    # Group by family, preserving a stable order.
+    families: dict[str, list[Sample]] = {}
+    for s in samples:
+        families.setdefault(s.name.split(".")[0], []).append(s)
+ 
+    for family in sorted(families):
+        lines.append("-" * width)
+        lines.append(f" {family}")
+        rows = sorted(families[family], key=lambda s: (s.name, s.labels))
+        for s in rows:
+            label = _label_suffix(s)
+            lines.append(f"   {s.name}{label}")
+            lines.append(f"       {_display_value(s, rates)}")
+ 
+    lines.append("=" * width)
     return "\n".join(lines)
 
 
-def run_once(storage: MetricsStorage, args: argparse.Namespace) -> None:
-    """Collect one snapshot, optionally save it, and print the report."""
-    metric = collect_metric(disk_path=args.disk_path)
+def run_cycle(storage: SampleStorage, args, previous: list[Sample]) -> list[Sample]:
+    """Collect one snapshot, optionally save it, print the report."""
+
+    samples = collect_samples(disk_paths=args.disk_path or None)
     if not args.no_save:
-        storage.save(metric)
-    recent = storage.get_recent(limit=args.limit)
-    # If we didn't save, the current snapshot may not be in `recent`; make sure
-    # the report still reflects what we just collected.
-    if args.no_save and (not recent or recent[0].timestamp != metric.timestamp):
-        recent = [metric, *recent][: args.limit]
-    print(format_report(metric, recent, storage._db_path), flush=True)
+        storage.save_many(samples)
+    rates = compute_rates(samples, previous) if previous else {}
+    print(format_report(samples, storage._db_path, rates), flush=True)
+    return samples
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="infra-monitor",
-        description="Collect system metrics and print a monitoring report.",
+        description="Collect labeled system metrics and print a monitoring report.",
     )
     parser.add_argument(
         "--db",
@@ -117,58 +176,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--disk-path",
-        default=default_disk_path(),
-        help="Filesystem path to measure disk usage for "
-        f"(default: {default_disk_path()!r}).",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=5,
-        help="How many recent snapshots to show in the report (default: 5).",
+        action="append",
+        metavar="PATH",
+        help="Filesystem path to measure disk usage for. Repeatable. "
+        "If omitted, all mounted partitions are measured automatically.",
     )
     parser.add_argument(
         "--no-save",
         action="store_true",
-        help="Collect and report without writing the snapshot to the database.",
+        help="Collect and report without writing samples to the database.",
     )
     parser.add_argument(
-        "--watch",
+        "--once",
         action="store_true",
-        help="Keep collecting on a fixed interval until interrupted (Ctrl+C).",
+        help="Take a single snapshot and exit, instead of monitoring "
+        "continuously until Ctrl+C.",
     )
     parser.add_argument(
         "--interval",
         type=float,
         default=10.0,
-        help="Seconds between snapshots when using --watch (default: 10).",
+        help="Seconds between snapshots in continuous mode (default: 10).",
     )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-
+ 
     try:
-        with MetricsStorage(args.db) as storage:
-            if args.watch:
+        with SampleStorage(args.db) as storage:
+            if args.once:
+                run_cycle(storage, args, previous=[])
+            else:
                 print(
-                    f"Watching every {args.interval:g}s - press Ctrl+C to stop.",
+                    f"Monitoring every {args.interval:g}s - press Ctrl+C to stop. "
+                    "(counter rates appear after the first interval)",
                     flush=True,
                 )
+                previous: list[Sample] = []
                 while True:
-                    run_once(storage, args)
+                    previous = run_cycle(storage, args, previous)
                     time.sleep(args.interval)
-            else:
-                run_once(storage, args)
     except KeyboardInterrupt:
         print("\nStopped.", flush=True)
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - clean top-level failure message
         print(f"Error: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0
-
-
+ 
+ 
 if __name__ == "__main__":
     raise SystemExit(main())

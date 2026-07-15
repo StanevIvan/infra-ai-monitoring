@@ -6,25 +6,26 @@ per-process metrics, network I/O, and log-based signals.
 
 from __future__ import annotations
 
-import psutil
-
 from datetime import datetime, timezone
 from typing import Optional, Sequence
+
+import psutil
+
 from infra_monitor.models import MetricKind, Sample
 
 
 def _clamp_percent(value: float) -> float:
-    """Keep percenteges inside 0..100 despite psutil rounding jitt error."""
+    """Keep percentages inside 0..100 despite psutil rounding jitter."""
     return max(0.0, min(100.0, float(value)))
 
 
 def collect_samples(
-        disk_path: Optional[Sequence[str]] = None,
-        timestamp: Optional[datetime] = None,
-        cpu_interval: float = 0.5,
+    disk_paths: Optional[Sequence[str]] = None,
+    timestamp: Optional[datetime] = None,
+    cpu_interval: float = 0.5,
 ) -> list[Sample]:
-    """ Take one snapshot of the host and return it as a list of Samples.
-    
+    """Take one snapshot of the host and return it as a list of Samples.
+
     Args:
         disk_paths: explicit filesystem paths to measure usage for. If None,
             every mounted partition is enumerated automatically.
@@ -32,35 +33,35 @@ def collect_samples(
         cpu_interval: blocking window psutil uses to measure CPU accurately.
             Without a positive interval the first reading after start is 0.0.
     """
-
     ts = timestamp or datetime.now(timezone.utc)
     out: list[Sample] = []
 
-    def gauge(name: str, value: float, unit: str = "", labels= None) -> None:
-        out.append(
-            Sample.create(
-                name,
-                value,
-                kind=MetricKind.GAUGE,
-                unit=unit,
-                labels=labels,
-                timestamp=ts,))
-        
-        _collect_cpu(gauge, cpu_interval)
-        _collect_memory(gauge)
-        _collect_disk_usage(gauge, disk_path)
-        _collect_disk_io(counter)
-        _collect_network(counter)
+    def gauge(name: str, value: float, unit: str = "", labels=None) -> None:
+        out.append(Sample.create(name, value, kind=MetricKind.GAUGE, unit=unit,
+                                  labels=labels, timestamp=ts))
 
-        return out
-    
+    def counter(name: str, value: float, unit: str = "", labels=None) -> None:
+        out.append(Sample.create(name, value, kind=MetricKind.COUNTER, unit=unit,
+                                  labels=labels, timestamp=ts))
 
-def _collect_cpu(gauge, interval: float) -> None:
+    _collect_cpu(gauge, cpu_interval)
+    _collect_memory(gauge)
+    _collect_disk_usage(gauge, disk_paths)
+    _collect_disk_io(counter)
+    _collect_network(counter)
+
+    return out
+
+
+def _collect_cpu(gauge, cpu_interval: float) -> None:
+    # A single blocking call yields the whole user/system/idle(/iowait) split;
+    # overall busy% is derived as 100 - idle so we don't pay two intervals.
     times = psutil.cpu_times_percent(interval=cpu_interval)
+    gauge("cpu.percent", _clamp_percent(100.0 - times.idle), unit="percent")
     gauge("cpu.user", _clamp_percent(times.user), unit="percent")
     gauge("cpu.system", _clamp_percent(times.system), unit="percent")
     gauge("cpu.idle", _clamp_percent(times.idle), unit="percent")
-
+    # iowait exists on Linux but not on Windows/macOS.
     iowait = getattr(times, "iowait", None)
     if iowait is not None:
         gauge("cpu.iowait", _clamp_percent(iowait), unit="percent")
@@ -81,30 +82,29 @@ def _collect_disk_usage(gauge, disk_paths: Optional[Sequence[str]]) -> None:
     if disk_paths:
         mounts = list(disk_paths)
     else:
+        # all=False skips pseudo/cdrom/removable filesystems.
         mounts = [p.mountpoint for p in psutil.disk_partitions(all=False)]
 
     for mount in mounts:
         try:
             usage = psutil.disk_usage(mount)
         except (PermissionError, OSError):
-            # e.g. an empty CD-ROM drive on windows, or a path that cannot be started.
-            continue 
-        
-        gauge("disk.usage.percent", _clamp_percent(usage.percent), unit="percent", labels={"mount": mount})
+            # e.g. an empty CD-ROM drive on Windows, or a path we can't stat.
+            continue
+        gauge("disk.usage.percent", _clamp_percent(usage.percent),
+              unit="percent", labels={"mount": mount})
 
 
 def _collect_disk_io(counter) -> None:
     io = psutil.disk_io_counters(perdisk=False)
-    if io is None:
-        return 
+    if io is None:  # unavailable in some containers / platforms
+        return
     counter("disk.read_bytes", io.read_bytes, unit="bytes")
     counter("disk.write_bytes", io.write_bytes, unit="bytes")
 
 
-
 def _collect_network(counter) -> None:
     per_nic = psutil.net_io_counters(pernic=True)
-
     for iface, io in per_nic.items():
         labels = {"interface": iface}
         counter("net.bytes_sent", io.bytes_sent, unit="bytes", labels=labels)
@@ -115,5 +115,3 @@ def _collect_network(counter) -> None:
         counter("net.errout", io.errout, unit="count", labels=labels)
         counter("net.dropin", io.dropin, unit="count", labels=labels)
         counter("net.dropout", io.dropout, unit="count", labels=labels)
-        
-        

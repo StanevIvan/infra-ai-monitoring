@@ -11,14 +11,31 @@ CI/CD, cloud infrastructure, observability, and applied ML.
 ## Current status: Month 1 — foundations
 
 At this stage the project can:
-- Collect a snapshot of CPU, memory, and disk usage from the local machine (`psutil`)
-- Persist snapshots to a local SQLite database
-- Retrieve the most recent snapshots
-- Validate that metric values are sane (0–100%)
+- Collect a broad snapshot of system metrics from the local machine via `psutil`:
+  CPU (overall plus a user/system/idle/iowait breakdown), memory and swap,
+  per-mount disk usage, disk I/O, and per-interface network I/O.
+- Model each measurement with a **narrow, labeled** data model (the same shape
+  used by time-series systems like Prometheus): every reading is a `Sample`
+  with a name, value, kind (gauge vs counter), unit, and a set of string labels.
+- Persist samples to a local SQLite database (one row per measurement).
+- Print a grouped monitoring report from a CLI, computing per-second **rates**
+  for counter metrics (network/disk I/O) from consecutive snapshots.
+- Validate that values are sane (percentages stay 0–100, counters stay non-negative).
 
 Everything is covered by unit tests, and the database access layer is
 isolated behind a single class so it can be swapped for PostgreSQL later
 without touching the rest of the codebase.
+
+### Gauges vs counters
+
+Two kinds of metric are collected, and the distinction matters:
+
+- **Gauges** are point-in-time values meaningful on their own (`cpu.percent`,
+  `mem.used`). The report shows them directly.
+- **Counters** are monotonic totals since boot (`net.bytes_sent`); the
+  interesting quantity is their *rate of change*. The CLI computes a
+  per-second rate from the previous snapshot, so counter rates appear from the
+  second cycle onward.
 
 ## Project structure
 
@@ -27,12 +44,15 @@ infra-ai-monitoring/
 ├── src/
 │   └── infra_monitor/
 │       ├── __init__.py
-│       ├── models.py      # Metric data model
-│       ├── collector.py   # Reads system metrics via psutil
-│       └── storage.py     # SQLite persistence layer
+│       ├── models.py      # Sample data model + MetricKind (gauge/counter)
+│       ├── collector.py   # Reads system metrics via psutil -> list[Sample]
+│       ├── storage.py     # SQLite persistence layer (samples table)
+│       └── cli.py         # Command-line entrypoint + report renderer
 ├── tests/
+│   ├── test_models.py
 │   ├── test_collector.py
-│   └── test_storage.py
+│   ├── test_storage.py
+│   └── test_cli.py
 ├── pyproject.toml
 └── README.md
 ```
@@ -56,32 +76,33 @@ pip install -e ".[dev]"
 
 ## Usage
 
-```python
-from infra_monitor.collector import collect_metric
-from infra_monitor.storage import MetricsStorage
-
-with MetricsStorage("metrics.db") as storage:
-    metric = collect_metric()
-    storage.save(metric)
-    print(storage.get_recent(5))
-```
-
-Or run it as a quick one-off collection loop (a proper CLI entrypoint and
-scheduler will be added once the FastAPI service lands in Month 2):
+Run the monitor from the command line. By default it collects continuously,
+printing a fresh report every `--interval` seconds until you stop it with
+Ctrl+C:
 
 ```bash
-python3 -c "
-import time
-from infra_monitor.collector import collect_metric
-from infra_monitor.storage import MetricsStorage
+python -m infra_monitor.cli                 # monitor until Ctrl+C
+python -m infra_monitor.cli --interval 5    # report every 5 seconds
+python -m infra_monitor.cli --once          # a single snapshot, then exit
+python -m infra_monitor.cli --no-save       # report without writing to the db
+python -m infra_monitor.cli --disk-path /   # only measure these mount(s)
+```
 
-with MetricsStorage('metrics.db') as storage:
-    while True:
-        m = collect_metric()
-        storage.save(m)
-        print(m)
-        time.sleep(10)
-"
+After `pip install -e .` the same tool is available as the `infra-monitor`
+command. On Windows, disk usage is measured across all mounted partitions by
+default, so no path argument is needed.
+
+Programmatic use:
+
+```python
+from infra_monitor.collector import collect_samples
+from infra_monitor.storage import SampleStorage
+
+with SampleStorage("metrics.db") as storage:
+    samples = collect_samples()
+    storage.save_many(samples)
+    for s in storage.get_recent(10):
+        print(s.series_key, s.value, s.unit)
 ```
 
 ## Running tests

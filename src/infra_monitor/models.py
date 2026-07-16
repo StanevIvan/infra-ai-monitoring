@@ -97,7 +97,7 @@ class Sample:
 
     @property
     def series_key(self) -> str:
-        """Stable identity of the time series this sample belongs to.""""
+        """Stable identity of the time series this sample belongs to."""
 
         if not self.labels:
             return self.name

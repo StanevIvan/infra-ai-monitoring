@@ -12,6 +12,13 @@ dependencies = [
 infra-monitor = "infra_monitor.cli:main"
 
 [project.optional-dependencies]
+# PostgreSQL support is optional: the SQLite path must not require a
+# Postgres driver, which is why factory.py imports psycopg lazily.
+# psycopg[binary] bundles libpq, so no system PostgreSQL install is needed.
+postgres = [
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

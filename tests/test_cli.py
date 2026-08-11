@@ -96,8 +96,30 @@ def test_continuous_loops_until_ctrlc(tmp_path, capsys):
 
 def test_parser_defaults():
     args = build_parser().parse_args([])
-    assert args.db == "metrics.db"
+    # --db and --backend default to None ("not specified"), so Settings can
+    # tell an explicit flag from an unset one. The *effective* default is
+    # still metrics.db, asserted below.
+    assert args.db is None
+    assert args.backend is None
     assert args.once is False
     assert args.no_save is False
     assert args.interval == 10.0
     assert args.disk_path is None
+
+
+def test_effective_db_default_is_metrics_db():
+    from infra_monitor.config import Settings
+
+    args = build_parser().parse_args([])
+    settings = Settings.from_env({}, db_backend=args.backend, sqlite_path=args.db)
+    assert settings.sqlite_path == "metrics.db"
+    assert settings.db_backend == "sqlite"
+
+
+def test_cli_db_flag_overrides_environment():
+    from infra_monitor.config import Settings
+
+    args = build_parser().parse_args(["--db", "/from/cli.db"])
+    settings = Settings.from_env({"INFRA_MONITOR_SQLITE_PATH": "/from/env.db"},
+                                 db_backend=args.backend, sqlite_path=args.db)
+    assert settings.sqlite_path == "/from/cli.db"

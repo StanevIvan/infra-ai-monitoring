@@ -140,6 +140,37 @@ def load_dotenv(
     return values
 
 
+def sqlalchemy_url(dsn: str) -> str:
+    """Translate a psycopg-native DSN into a SQLAlchemy URL using psycopg 3.
+
+    Why this exists: the application talks to PostgreSQL through psycopg
+    directly, which accepts the plain ``postgresql://`` scheme. Alembic,
+    however, runs on SQLAlchemy — and SQLAlchemy 2.0 maps a bare
+    ``postgresql://`` URL to **psycopg2**, which this project does not
+    install. Running a migration would fail with
+    ``ModuleNotFoundError: No module named 'psycopg2'``.
+
+    Rather than keep two near-identical URLs in ``.env`` (which would
+    inevitably drift), ``DATABASE_URL`` stays in its psycopg-native form and
+    Alembic converts it here:
+
+    ``postgresql://u:p@h/db`` -> ``postgresql+psycopg://u:p@h/db``
+
+    A URL that already names a driver (``postgresql+asyncpg://``) is left
+    untouched, so this is safe to call unconditionally.
+    """
+    if not dsn:
+        return dsn
+    scheme, sep, rest = dsn.partition("://")
+    if not sep:
+        return dsn
+    if "+" in scheme:  # driver already specified - respect it
+        return dsn
+    if scheme in ("postgres", "postgresql"):
+        return f"postgresql+psycopg://{rest}"
+    return dsn
+
+
 def redact_dsn(dsn: Optional[str]) -> str:
     """Return a DSN safe to print, with any password replaced by ``***``.
 

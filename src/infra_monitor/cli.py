@@ -33,15 +33,31 @@ from typing import Optional
 # --- Make direct execution work (python src/infra_monitor/cli.py) ----------
 try:
     from infra_monitor.collector import collect_samples
+    from infra_monitor.config import (
+        DEFAULT_SQLITE_PATH,
+        ENV_BACKEND,
+        ENV_SQLITE_PATH,
+        VALID_BACKENDS,
+        Settings,
+        load_dotenv,
+    )
+    from infra_monitor.factory import get_repository
     from infra_monitor.models import MetricKind, Sample
     from infra_monitor.repository import MetricsRepository
-    from infra_monitor.storage import SqliteRepository
 except ModuleNotFoundError:  # pragma: no cover - exercised only on direct run
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from infra_monitor.collector import collect_samples
+    from infra_monitor.config import (
+        DEFAULT_SQLITE_PATH,
+        ENV_BACKEND,
+        ENV_SQLITE_PATH,
+        VALID_BACKENDS,
+        Settings,
+        load_dotenv,
+    )
+    from infra_monitor.factory import get_repository
     from infra_monitor.models import MetricKind, Sample
     from infra_monitor.repository import MetricsRepository
-    from infra_monitor.storage import SqliteRepository
 
 
 # --------------------------------------------------------------------------
@@ -176,10 +192,21 @@ def build_parser() -> argparse.ArgumentParser:
         prog="infra-monitor",
         description="Collect labeled system metrics and print a monitoring report.",
     )
+    # Note: --db and --backend default to None, not to real values. "None"
+    # means "not specified on the command line", which is what lets Settings
+    # distinguish an explicit flag from an unset one and apply the
+    # CLI > env > .env > default precedence chain correctly.
     parser.add_argument(
         "--db",
-        default="metrics.db",
-        help="Path to the SQLite database file (default: metrics.db).",
+        default=None,
+        help="Path to the SQLite database file "
+        f"(default: {DEFAULT_SQLITE_PATH}, or ${ENV_SQLITE_PATH}).",
+    )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        choices=VALID_BACKENDS,
+        help=f"Storage backend to use (default: sqlite, or ${ENV_BACKEND}).",
     )
     parser.add_argument(
         "--disk-path",
@@ -212,7 +239,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        with SqliteRepository(args.db) as storage:
+        # Secrets first: merge .env into the environment so every component
+        # (DB credentials now, API keys later) can read os.environ. Real
+        # environment variables are left untouched and therefore win.
+        load_dotenv()
+        # Configuration is resolved once, at startup: CLI flags override
+        # environment variables, which override .env, which override defaults.
+        settings = Settings.from_env(
+            db_backend=args.backend,
+            sqlite_path=args.db,
+        )
+        with get_repository(settings) as storage:
             if args.once:
                 run_cycle(storage, args, previous=[])
             else:

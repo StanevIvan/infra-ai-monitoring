@@ -4,6 +4,7 @@ Environments are always passed in explicitly (never mutating os.environ), so
 tests stay isolated and cannot leak state into one another.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from infra_monitor.config import (
     load_dotenv,
     parse_dotenv,
     redact_dsn,
+    sqlalchemy_url,
 )
 from infra_monitor.factory import get_repository
 from infra_monitor.repository import MetricsRepository
@@ -195,6 +197,37 @@ def test_settings_display_name_for_sqlite_is_the_path():
     assert Settings(sqlite_path="/data/metrics.db").display_name == "/data/metrics.db"
 
 
+# --- SQLAlchemy URL translation (Alembic) ---------------------------------
+
+def test_sqlalchemy_url_pins_psycopg3():
+    # A bare postgresql:// URL would make SQLAlchemy look for psycopg2,
+    # which this project does not install.
+    assert sqlalchemy_url("postgresql://u:p@h:5432/db") == (
+        "postgresql+psycopg://u:p@h:5432/db"
+    )
+
+
+def test_sqlalchemy_url_normalizes_postgres_scheme():
+    assert sqlalchemy_url("postgres://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+
+
+def test_sqlalchemy_url_respects_an_explicit_driver():
+    assert sqlalchemy_url("postgresql+asyncpg://u:p@h/db") == (
+        "postgresql+asyncpg://u:p@h/db"
+    )
+
+
+def test_sqlalchemy_url_leaves_other_schemes_alone():
+    assert sqlalchemy_url("sqlite:///metrics.db") == "sqlite:///metrics.db"
+    assert sqlalchemy_url("") == ""
+
+
+def test_sqlalchemy_url_preserves_credentials_for_connection():
+    # Translation must not mangle the password - only display paths redact.
+    out = sqlalchemy_url("postgresql://ivan:s3cret@h:5432/infra")
+    assert "s3cret" in out
+
+
 # --- factory --------------------------------------------------------------
 
 def test_factory_returns_sqlite_repository():
@@ -214,8 +247,32 @@ def test_factory_honors_configured_sqlite_path():
         repo.close()
 
 
-def test_factory_rejects_postgres_until_phase_e():
-    settings = Settings(db_backend="postgres",
-                        database_url="postgresql://u:p@localhost:5432/infra")
-    with pytest.raises(NotImplementedError):
-        get_repository(settings)
+def test_factory_builds_a_postgres_repository():
+    # Phase E: the factory now dispatches to PostgresRepository. Constructing
+    # one opens a connection, so this needs both the driver and a live server.
+    pytest.importorskip("psycopg")
+    dsn = os.environ.get("TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("TEST_DATABASE_URL not set")
+
+    from infra_monitor.postgres_storage import PostgresRepository
+
+    repo = get_repository(Settings(db_backend="postgres", database_url=dsn))
+    try:
+        assert isinstance(repo, PostgresRepository)
+        assert isinstance(repo, MetricsRepository)
+    finally:
+        repo.close()
+
+
+def test_factory_postgres_without_driver_explains_how_to_install():
+    # Without psycopg the failure must be an actionable install message, not
+    # a bare ImportError from deep inside the module.
+    from infra_monitor import postgres_storage
+
+    if postgres_storage.PSYCOPG_AVAILABLE:
+        pytest.skip("psycopg is installed; the missing-driver path cannot run")
+    with pytest.raises(RuntimeError) as exc:
+        get_repository(Settings(db_backend="postgres",
+                                database_url="postgresql://u:p@h:5432/d"))
+    assert "psycopg" in str(exc.value)

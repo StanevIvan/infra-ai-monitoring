@@ -39,13 +39,13 @@ def get_repository(settings: Settings) -> MetricsRepository:
         return SqliteRepository(settings.sqlite_path)
 
     if settings.db_backend == POSTGRES:
-        # Phase E will import PostgresRepository here. The import stays inside
-        # this branch so that SQLite users are never required to install a
-        # PostgreSQL driver they don't use.
-        raise NotImplementedError(
-            "The PostgreSQL backend is not implemented yet (planned for Phase E "
-            "of the migration). Use INFRA_MONITOR_DB_BACKEND=sqlite for now."
-        )
+        # Imported inside the branch so SQLite users are never required to
+        # install a PostgreSQL driver they don't use.
+        from infra_monitor.postgres_storage import PostgresRepository
+
+        # Settings validation guarantees database_url is present for this
+        # backend, so no None can reach the constructor here.
+        return PostgresRepository(settings.database_url or "")
 
     # Settings validation should catch this first; kept as a safety net.
     raise ValueError(f"Unsupported db_backend: {settings.db_backend!r}")

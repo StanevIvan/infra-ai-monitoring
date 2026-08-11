@@ -1,30 +1,25 @@
 """Command-line entrypoint for the Infrastructure AI Monitoring Platform.
 
-Collects a snapshot of system metrics, persists it, and prints a small
-monitoring report of the most recent snapshots.
+Collects a full snapshot of labeled metric samples, persists them, and prints
+a grouped monitoring report. Gauges are shown as-is (percentages get a small
+bar); counters are shown as a per-second rate computed from the previous
+cycle, falling back to the raw running total on the very first reading.
+
+By default it monitors continuously, printing a fresh report every --interval
+seconds until you stop it with Ctrl+C. Use --once for a single snapshot.
 
 Run it in any of these ways:
 
-    # as a module (recommended, from the project root)
-    python -m infra_monitor.cli
-
-    # directly (e.g. the "Run" button in VS Code)
-    python src/infra_monitor/cli.py
-
-    # if installed with `pip install -e .`
-    infra-monitor
-
-By default it monitors continuously, printing a fresh report every
---interval seconds until you stop it with Ctrl+C. Use --once for a single
-snapshot.
+    python -m infra_monitor.cli                 # monitor until Ctrl+C
+    python -m infra_monitor.cli --once          # one snapshot, then exit
+    python src/infra_monitor/cli.py             # direct (VS Code Run button)
+    infra-monitor                               # if installed with pip -e .
 
 Common options:
 
-    python -m infra_monitor.cli                      # monitor until Ctrl+C
-    python -m infra_monitor.cli --interval 5         # report every 5 seconds
-    python -m infra_monitor.cli --once              # one snapshot, then exit
-    python -m infra_monitor.cli --limit 10          # show last 10 snapshots
-    python -m infra_monitor.cli --no-save           # don't write to the db
+    python -m infra_monitor.cli --interval 5    # report every 5 seconds
+    python -m infra_monitor.cli --no-save       # don't write to the db
+    python -m infra_monitor.cli --disk-path /   # only measure these mounts
 """
 
 from __future__ import annotations
@@ -36,40 +31,44 @@ import time
 from typing import Optional
 
 # --- Make direct execution work (python src/infra_monitor/cli.py) ----------
-# When run as a plain script, the "infra_monitor" package isn't on sys.path,
-# so the imports below would fail. Add the "src" directory (this file's
-# grandparent) to sys.path so the package resolves either way.
 try:
     from infra_monitor.collector import collect_samples
     from infra_monitor.models import MetricKind, Sample
-    from infra_monitor.storage import SampleStorage
+    from infra_monitor.repository import MetricsRepository
+    from infra_monitor.storage import SqliteRepository
 except ModuleNotFoundError:  # pragma: no cover - exercised only on direct run
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from infra_monitor.collector import collect_samples
-    from infra_monitor.models import MetricKind
-    from infra_monitor.storage import SampleStorage
+    from infra_monitor.models import MetricKind, Sample
+    from infra_monitor.repository import MetricsRepository
+    from infra_monitor.storage import SqliteRepository
 
 
-
+# --------------------------------------------------------------------------
+# Formatting helpers
+# --------------------------------------------------------------------------
 def human_bytes(n: float) -> str:
-    """Render a byte count as a human-readable string (B, KB, MB, ...)"""
-
+    """Render a byte count as a human-readable string (B, KB, MB, ...)."""
     value = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
         if abs(value) < 1024.0 or unit == "PB":
             return f"{value:,.0f} B" if unit == "B" else f"{value:,.1f} {unit}"
-
         value /= 1024.0
-    return f"{value:,.1f} PB"
+    return f"{value:,.1f} PB"  # unreachable, keeps type checkers happy
 
 
 def _percent_bar(value: float, width: int = 10) -> str:
     filled = max(0, min(width, int(round(value / (100.0 / width)))))
     return "#" * filled + "." * (width - filled)
- 
+
 
 def compute_rates(current: list[Sample], previous: list[Sample]) -> dict[str, float]:
+    """Per-second rate for each counter series, from two consecutive cycles.
 
+    Keyed by ``series_key`` (name + labels). Skips series with no previous
+    reading, non-positive time delta, or a negative delta (a counter reset,
+    e.g. the host rebooted between cycles).
+    """
     prev_by_series = {s.series_key: s for s in previous if s.kind is MetricKind.COUNTER}
     rates: dict[str, float] = {}
     for s in current:
@@ -90,7 +89,6 @@ def compute_rates(current: list[Sample], previous: list[Sample]) -> dict[str, fl
 
 def _display_value(s: Sample, rates: dict[str, float]) -> str:
     """Human-readable value for one sample, given any computed rates."""
-
     if s.unit == "percent":
         return f"{s.value:5.1f}%  [{_percent_bar(s.value)}]"
     if s.kind is MetricKind.COUNTER:
@@ -110,7 +108,6 @@ def _display_value(s: Sample, rates: dict[str, float]) -> str:
 
 
 def _label_suffix(s: Sample) -> str:
-
     if not s.labels:
         return ""
     return " {" + ", ".join(f"{k}={v}" for k, v in s.labels) + "}"
@@ -121,8 +118,12 @@ def format_report(
     db_path: str,
     rates: Optional[dict[str, float]] = None,
 ) -> str:
-    """Build the grouped monitoring report string."""
-    
+    """Build the grouped monitoring report string.
+
+    Samples are grouped by metric *family* (the part of the name before the
+    first dot) so the report organizes itself automatically as new metrics
+    are added -- no per-metric formatting code required.
+    """
     rates = rates or {}
     width = 44
     lines: list[str] = []
@@ -134,12 +135,12 @@ def format_report(
         lines.append(f" Taken:    {stamp}")
     lines.append(f" Database: {db_path}")
     lines.append(f" Samples:  {len(samples)}")
- 
+
     # Group by family, preserving a stable order.
     families: dict[str, list[Sample]] = {}
     for s in samples:
         families.setdefault(s.name.split(".")[0], []).append(s)
- 
+
     for family in sorted(families):
         lines.append("-" * width)
         lines.append(f" {family}")
@@ -148,19 +149,25 @@ def format_report(
             label = _label_suffix(s)
             lines.append(f"   {s.name}{label}")
             lines.append(f"       {_display_value(s, rates)}")
- 
+
     lines.append("=" * width)
     return "\n".join(lines)
 
 
-def run_cycle(storage: SampleStorage, args, previous: list[Sample]) -> list[Sample]:
-    """Collect one snapshot, optionally save it, print the report."""
+# --------------------------------------------------------------------------
+# Orchestration
+# --------------------------------------------------------------------------
+def run_cycle(storage: MetricsRepository, args, previous: list[Sample]) -> list[Sample]:
+    """Collect one snapshot, optionally save it, print the report.
 
+    Returns the samples so the caller can pass them as ``previous`` to the
+    next cycle for rate computation.
+    """
     samples = collect_samples(disk_paths=args.disk_path or None)
     if not args.no_save:
         storage.save_many(samples)
     rates = compute_rates(samples, previous) if previous else {}
-    print(format_report(samples, storage._db_path, rates), flush=True)
+    print(format_report(samples, storage.display_name, rates), flush=True)
     return samples
 
 
@@ -203,9 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
- 
+
     try:
-        with SampleStorage(args.db) as storage:
+        with SqliteRepository(args.db) as storage:
             if args.once:
                 run_cycle(storage, args, previous=[])
             else:
@@ -225,7 +232,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Error: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0
- 
- 
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

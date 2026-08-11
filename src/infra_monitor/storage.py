@@ -1,10 +1,15 @@
-"""SQLite storage layer for metrics.
+"""SQLite storage layer for metric samples.
 
-Design choice: all raw SQL lives here and nowhere else in the codebase.
-This keeps the rest of the app database-agnostic and makes it far easier
-to swap SQLite for PostgreSQL in Month 2 (same interface, new implementation).
+Design choice (unchanged from Month 1): all raw SQL lives here and nowhere
+else in the codebase, so the rest of the app stays database-agnostic and this
+class can be reimplemented against PostgreSQL later behind the same interface.
+
+The schema is now **narrow**: one row per measurement rather than one row per
+snapshot. Columns are ``(timestamp, name, value, kind, unit, labels)`` where
+``labels`` is a canonical JSON object. This lets us store an arbitrary and
+growing set of metrics -- including multi-valued ones like per-interface
+network counters -- without ever altering the table.
 """
-
 
 from __future__ import annotations
 
@@ -49,14 +54,20 @@ LIMIT ?;
 
 
 def _labels_to_json(labels) -> str:
-    """Serialize labels to canonical JSON (sorted keys, compact separators)."""
+    """Serialize labels to canonical JSON (sorted keys, compact separators).
 
+    Canonical form means two identical label sets always produce the same
+    text, so they compare equal in SQL and could be indexed/grouped later.
+    """
     return json.dumps(dict(labels), sort_keys=True, separators=(",", ":"))
 
 
 def _row_to_sample(row: tuple) -> Sample:
-    """Rebuild a Sample (a domain object, not a raw tuple) from a DB row."""
+    """Rebuild a Sample (a domain object, not a raw tuple) from a DB row.
 
+    Reads pass back through Sample construction, so validation applies on the
+    way out too -- defense in depth against a corrupted row.
+    """
     timestamp, name, value, kind, unit, labels_json = row
     return Sample(
         timestamp=datetime.fromisoformat(timestamp),
@@ -68,27 +79,35 @@ def _row_to_sample(row: tuple) -> Sample:
     )
 
 
-class SampleStorage:
-    """Thin wrapper around a SQLite database of metric samples.
+class SqliteRepository:
+    """SQLite-backed implementation of ``MetricsRepository``.
 
     Usage::
 
-        with SampleStorage("metrics.db") as storage:
+        with SqliteRepository("metrics.db") as storage:
             storage.save_many(collect_samples())
             recent = storage.get_recent(50)
 
     Works without the context manager too (call ``init_schema`` / ``close``
     yourself). Note ``with self._conn:`` blocks below manage *transactions*
     (commit on success, rollback on error), not the connection lifecycle.
+
+    This class does not inherit from ``MetricsRepository`` — it conforms to it
+    structurally (see repository.py). A ``PostgresRepository`` will implement
+    the same surface in Month 2.
     """
 
     def __init__(self, db_path: Union[str, Path] = "metrics.db") -> None:
         self._db_path = str(db_path)
         self._conn = sqlite3.connect(self._db_path)
 
+    @property
+    def display_name(self) -> str:
+        """Human-readable identity of the store (the SQLite file path)."""
+        return self._db_path
+
     def init_schema(self) -> None:
         """Create the samples table and its indexes if they don't exist."""
-
         with self._conn:
             self._conn.execute(_CREATE_TABLE_SQL)
             for stmt in _CREATE_INDEXES_SQL:
@@ -96,13 +115,16 @@ class SampleStorage:
 
     def save(self, sample: Sample) -> None:
         """Persist a single Sample."""
-
         with self._conn:
             self._conn.execute(_INSERT_SQL, self._to_row(sample))
 
     def save_many(self, samples: Iterable[Sample]) -> int:
-        """Persist many Samples in one transaction. Returns the count."""
+        """Persist many Samples in one transaction. Returns the count.
 
+        A single collection cycle now produces dozens of samples; batching
+        them into one ``executemany`` is both faster and atomic (all land or
+        none do).
+        """
         rows = [self._to_row(s) for s in samples]
         with self._conn:
             self._conn.executemany(_INSERT_SQL, rows)
@@ -110,7 +132,6 @@ class SampleStorage:
 
     def get_recent(self, limit: int = 50) -> list[Sample]:
         """Return the most recent ``limit`` samples, newest first."""
-
         cursor = self._conn.execute(_SELECT_RECENT_SQL, (limit,))
         return [_row_to_sample(row) for row in cursor.fetchall()]
 
@@ -122,8 +143,12 @@ class SampleStorage:
         until: Optional[datetime] = None,
         limit: int = 1000,
     ) -> list[Sample]:
-        """Flexible read: filter by metric name and/or time window."""
-        
+        """Flexible read: filter by metric name and/or time window.
+
+        All filters are optional and combine with AND. Results are newest
+        first. Time bounds are compared as ISO-8601 text, which sorts
+        chronologically because timestamps are always stored in UTC.
+        """
         clauses: list[str] = []
         params: list = []
         if name is not None:
@@ -159,9 +184,14 @@ class SampleStorage:
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> "SampleStorage":
+    def __enter__(self) -> "SqliteRepository":
         self.init_schema()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
+
+
+# Backwards-compatible alias for the pre-0.3 name. Prefer SqliteRepository.
+# Will be removed once all call sites are migrated.
+SampleStorage = SqliteRepository

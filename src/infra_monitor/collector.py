@@ -1,7 +1,23 @@
-"""Collects basic system metrics from the host machine using psutil.
+"""Collects system metrics from the host machine using psutil.
 
-Month 1 scope: CPU, memory, and disk usage only. Later months will add
-per-process metrics, network I/O, and log-based signals.
+Returns a flat list of :class:`Sample` objects per collection cycle -- one
+sample per (metric, label-set). Every sample in a cycle shares a single
+timestamp so the snapshot lines up in time.
+
+Metric families collected:
+
+- **cpu**    : overall percent plus a user/system/idle/iowait breakdown (gauges)
+- **mem**    : percent, used/available bytes (gauges)
+- **swap**   : percent, used bytes (gauges)
+- **disk**   : per-mount usage percent (gauge, labeled ``mount``) and
+               host-wide read/write bytes (counters)
+- **net**    : per-interface bytes/packets/errors/drops (counters,
+               labeled ``interface``)
+
+Gauges vs counters matters downstream: gauges are meaningful as-is, counters
+are monotonic totals whose *rate of change* is the interesting quantity.
+Platform differences are handled defensively -- some psutil calls return
+``None`` or omit fields depending on the OS.
 """
 
 from __future__ import annotations

@@ -1,5 +1,25 @@
-"""Data models for the Infrastructure AI Monitoring Platform."""
+"""Data models for the Infrastructure AI Monitoring Platform.
 
+Month 1 used a single flat ``Metric`` per snapshot (one row = cpu/mem/disk).
+As the number and shape of collected signals grew -- per-interface network
+counters, per-mount disk usage, a CPU-time breakdown -- that flat model
+stopped fitting: some metrics are *multi-valued* (one reading per network
+interface) and some are *counters* rather than *gauges*.
+
+This module adopts a **narrow, labeled** model, the same shape used by
+time-series systems like Prometheus. Each measurement is a single ``Sample``
+carrying:
+
+- a metric ``name`` (e.g. ``"net.bytes_sent"``),
+- a numeric ``value``,
+- a ``kind`` -- GAUGE (point-in-time) or COUNTER (monotonic total),
+- a ``unit`` (e.g. ``"percent"``, ``"bytes"``),
+- and a set of string ``labels`` giving it dimensions
+  (e.g. ``interface="eth0"``).
+
+One physical row therefore holds one measurement of one series, and adding a
+new metric never requires a schema change.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +57,11 @@ Labels = tuple[tuple[str, str], ...]
 
 
 def normalize_labels(labels: Union[Mapping[str, str], Labels, None]) -> Labels:
-    """Return labels as a canonical, sorted tuple of ``(str, str)`` pairs."""
+    """Return labels as a canonical, sorted tuple of ``(str, str)`` pairs.
+
+    Accepts a dict, an already-normalized tuple, or ``None``. Keys and values
+    are coerced to ``str`` so callers can pass e.g. an int label value.
+    """
     if not labels:
         return ()
     items = labels.items() if isinstance(labels, Mapping) else labels
@@ -46,7 +70,12 @@ def normalize_labels(labels: Union[Mapping[str, str], Labels, None]) -> Labels:
 
 @dataclass(frozen=True)
 class Sample:
-    """A single measurement of one metric at one point in time."""
+    """A single measurement of one metric at one point in time.
+
+    Immutable and hashable. Prefer the :meth:`create` factory, which stamps
+    the time, normalizes labels, and applies defaults; the bare constructor is
+    used mostly by the storage layer when rehydrating database rows.
+    """
 
     timestamp: datetime
     name: str
@@ -56,7 +85,6 @@ class Sample:
     labels: Labels = ()
 
     def __post_init__(self) -> None:
-
         # Fail fast at construction so no invalid Sample can exist downstream.
         if not self.name:
             raise ValueError("Sample.name must be a non-empty string")
@@ -97,8 +125,13 @@ class Sample:
 
     @property
     def series_key(self) -> str:
-        """Stable identity of the time series this sample belongs to."""
+        """Stable identity of the time series this sample belongs to.
 
+        Two samples belong to the same series iff they share this key --
+        the metric name plus its sorted labels, e.g.
+        ``net.bytes_sent{interface=eth0}``. Used to line up consecutive
+        samples when computing counter rates.
+        """
         if not self.labels:
             return self.name
         label_str = ",".join(f"{k}={v}" for k, v in self.labels)

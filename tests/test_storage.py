@@ -9,13 +9,22 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from infra_monitor.models import MetricKind, Sample
-from infra_monitor.storage import SampleStorage
+from infra_monitor.repository import MetricsRepository
+from infra_monitor.storage import SqliteRepository
 
 
 @pytest.fixture
 def storage():
-    with SampleStorage(":memory:") as store:
+    with SqliteRepository(":memory:") as store:
         yield store
+
+
+def test_sqlite_repository_satisfies_the_interface():
+    # Structural conformance: SqliteRepository implements MetricsRepository
+    # without inheriting from it. This is the contract Postgres will also meet.
+    with SqliteRepository(":memory:") as store:
+        assert isinstance(store, MetricsRepository)
+        assert store.display_name == ":memory:"
 
 
 def _sample(name="cpu.percent", value=10.0, *, kind=MetricKind.GAUGE,

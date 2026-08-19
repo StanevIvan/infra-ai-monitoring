@@ -1,0 +1,146 @@
+name: CI
+
+# Runs on every push to main and every pull request. workflow_dispatch lets
+# you trigger a run by hand from the Actions tab.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel an in-flight run when new commits are pushed to the same branch:
+# only the latest commit's result is interesting, and it keeps queues short.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: nothing here needs to write to the repository.
+permissions:
+  contents: read
+
+env:
+  # Postgres is checked out fresh for every run and is reachable only from
+  # inside the job, so this password is not a secret and deliberately lives
+  # in plain sight. Real credentials arrive with cloud deploys in Month 3 and
+  # will come from GitHub Secrets / OIDC, never from this file.
+  POSTGRES_USER: infra
+  POSTGRES_PASSWORD: ci_ephemeral_not_a_secret
+  POSTGRES_DB: infra
+
+jobs:
+  lint:
+    name: Lint (ruff + black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: ruff
+        run: ruff check .
+      - name: black
+        run: black --check --diff .
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    # Non-blocking for now: mypy findings are reported but do not fail the
+    # build. The codebase currently passes cleanly, so flipping this to
+    # `false` (or deleting the line) makes type errors blocking whenever you
+    # are ready.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        # The postgres extra is needed so mypy can resolve psycopg imports.
+        run: pip install -e ".[dev,postgres]"
+      - name: mypy
+        run: mypy src
+
+  test:
+    name: Tests (Linux, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    # A real PostgreSQL for the integration tests. Without this they skip,
+    # and the PostgreSQL code path would go unverified - which is exactly how
+    # the psycopg `with conn:` bug reached main.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        # The job waits for this to report healthy before running any step,
+        # so nothing races a database that is still starting up.
+        options: >-
+          --health-cmd "pg_isready -U infra -d infra"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Alembic reads DATABASE_URL; the integration tests read
+      # TEST_DATABASE_URL. Both point at the service container.
+      DATABASE_URL: postgresql://infra:ci_ephemeral_not_a_secret@localhost:5432/infra
+      TEST_DATABASE_URL: postgresql://infra:ci_ephemeral_not_a_secret@localhost:5432/infra
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,postgres]"
+
+      - name: Apply database migrations
+        # Proves the Alembic chain applies cleanly to an empty database on
+        # every run - a migration that only works on your laptop fails here.
+        run: alembic upgrade head
+
+      - name: Verify the migration is reversible
+        # Roll the whole chain back and re-apply it. A migration you cannot
+        # undo is one you cannot safely deploy.
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Run tests
+        run: pytest --cov=infra_monitor --cov-report=term-missing -v
+
+  test-windows:
+    name: Tests (Windows, unit only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        # Deliberately without the postgres extra. Service containers do not
+        # run on Windows runners, and the integration tests skip themselves
+        # when psycopg / TEST_DATABASE_URL are absent - so this job covers the
+        # platform-specific code paths (the SystemDrive disk default, absent
+        # cpu iowait) that Linux CI cannot exercise.
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -v

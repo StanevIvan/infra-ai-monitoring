@@ -28,6 +28,7 @@ MISSING_DOTENV = Path("/nonexistent/.env")
 
 # --- Settings resolution --------------------------------------------------
 
+
 def test_defaults_when_environment_is_empty():
     s = Settings.from_env(NO_ENV)
     assert s.db_backend == "sqlite"
@@ -66,10 +67,12 @@ def test_postgres_without_dsn_rejected():
 
 
 def test_postgres_with_dsn_is_valid():
-    s = Settings.from_env({
-        "INFRA_MONITOR_DB_BACKEND": "postgres",
-        "DATABASE_URL": "postgresql://u:p@localhost:5432/infra",
-    })
+    s = Settings.from_env(
+        {
+            "INFRA_MONITOR_DB_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://u:p@localhost:5432/infra",
+        }
+    )
     assert s.db_backend == "postgres"
 
 
@@ -78,6 +81,7 @@ def test_backend_is_normalized():
 
 
 # --- .env parsing and loading ---------------------------------------------
+
 
 def test_parse_dotenv_handles_comments_quotes_and_export(tmp_path):
     dotenv = tmp_path / ".env"
@@ -159,6 +163,7 @@ def test_find_dotenv_returns_none_when_absent(tmp_path):
 
 # --- credential safety ----------------------------------------------------
 
+
 def test_redact_dsn_masks_password():
     out = redact_dsn("postgresql://ivan:supersecret@db.example.com:5432/infra")
     assert "supersecret" not in out
@@ -178,16 +183,18 @@ def test_redact_dsn_handles_empty_and_garbage():
 
 
 def test_settings_display_name_never_leaks_password():
-    s = Settings(db_backend="postgres",
-                 database_url="postgresql://ivan:supersecret@host:5432/infra")
+    s = Settings(
+        db_backend="postgres", database_url="postgresql://ivan:supersecret@host:5432/infra"
+    )
     assert "supersecret" not in s.display_name
 
 
 def test_settings_repr_never_leaks_password():
     # The generated dataclass repr would print the DSN in full, exposing the
     # password in tracebacks, debuggers and log.debug("%r", settings) calls.
-    s = Settings(db_backend="postgres",
-                 database_url="postgresql://ivan:supersecret@host:5432/infra")
+    s = Settings(
+        db_backend="postgres", database_url="postgresql://ivan:supersecret@host:5432/infra"
+    )
     assert "supersecret" not in repr(s)
     assert "supersecret" not in str(s)
     assert "***" in repr(s)
@@ -199,12 +206,11 @@ def test_settings_display_name_for_sqlite_is_the_path():
 
 # --- SQLAlchemy URL translation (Alembic) ---------------------------------
 
+
 def test_sqlalchemy_url_pins_psycopg3():
     # A bare postgresql:// URL would make SQLAlchemy look for psycopg2,
     # which this project does not install.
-    assert sqlalchemy_url("postgresql://u:p@h:5432/db") == (
-        "postgresql+psycopg://u:p@h:5432/db"
-    )
+    assert sqlalchemy_url("postgresql://u:p@h:5432/db") == ("postgresql+psycopg://u:p@h:5432/db")
 
 
 def test_sqlalchemy_url_normalizes_postgres_scheme():
@@ -212,9 +218,7 @@ def test_sqlalchemy_url_normalizes_postgres_scheme():
 
 
 def test_sqlalchemy_url_respects_an_explicit_driver():
-    assert sqlalchemy_url("postgresql+asyncpg://u:p@h/db") == (
-        "postgresql+asyncpg://u:p@h/db"
-    )
+    assert sqlalchemy_url("postgresql+asyncpg://u:p@h/db") == ("postgresql+asyncpg://u:p@h/db")
 
 
 def test_sqlalchemy_url_leaves_other_schemes_alone():
@@ -229,6 +233,7 @@ def test_sqlalchemy_url_preserves_credentials_for_connection():
 
 
 # --- factory --------------------------------------------------------------
+
 
 def test_factory_returns_sqlite_repository():
     repo = get_repository(Settings(sqlite_path=":memory:"))
@@ -273,6 +278,5 @@ def test_factory_postgres_without_driver_explains_how_to_install():
     if postgres_storage.PSYCOPG_AVAILABLE:
         pytest.skip("psycopg is installed; the missing-driver path cannot run")
     with pytest.raises(RuntimeError) as exc:
-        get_repository(Settings(db_backend="postgres",
-                                database_url="postgresql://u:p@h:5432/d"))
+        get_repository(Settings(db_backend="postgres", database_url="postgresql://u:p@h:5432/d"))
     assert "psycopg" in str(exc.value)

@@ -12,9 +12,7 @@ from infra_monitor.models import MetricKind
 
 
 def _fake_psutil(mock):
-    mock.cpu_times_percent.return_value = MagicMock(
-        user=10.0, system=5.0, idle=80.0, iowait=5.0
-    )
+    mock.cpu_times_percent.return_value = MagicMock(user=10.0, system=5.0, idle=80.0, iowait=5.0)
     mock.virtual_memory.return_value = MagicMock(
         percent=55.0, used=8_000_000_000, available=8_000_000_000
     )
@@ -24,8 +22,14 @@ def _fake_psutil(mock):
     mock.disk_io_counters.return_value = MagicMock(read_bytes=1000, write_bytes=2000)
     mock.net_io_counters.return_value = {
         "eth0": MagicMock(
-            bytes_sent=500, bytes_recv=600, packets_sent=5, packets_recv=6,
-            errin=0, errout=0, dropin=0, dropout=0,
+            bytes_sent=500,
+            bytes_recv=600,
+            packets_sent=5,
+            packets_recv=6,
+            errin=0,
+            errout=0,
+            dropin=0,
+            dropout=0,
         )
     }
     return mock

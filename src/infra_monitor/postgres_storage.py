@@ -84,7 +84,7 @@ def to_params(sample: Sample, json_adapter: Any = None) -> tuple:
     """
     adapt = json_adapter if json_adapter is not None else (Jsonb or (lambda v: v))
     return (
-        sample.timestamp,          # psycopg adapts datetime -> TIMESTAMPTZ
+        sample.timestamp,  # psycopg adapts datetime -> TIMESTAMPTZ
         sample.name,
         sample.value,
         str(sample.kind.value),

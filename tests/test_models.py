@@ -8,8 +8,9 @@ from infra_monitor.models import MetricKind, Sample, normalize_labels
 
 
 def test_create_stamps_time_and_normalizes_labels():
-    s = Sample.create("net.bytes_sent", 10, kind=MetricKind.COUNTER,
-                      unit="bytes", labels={"interface": "eth0"})
+    s = Sample.create(
+        "net.bytes_sent", 10, kind=MetricKind.COUNTER, unit="bytes", labels={"interface": "eth0"}
+    )
     assert s.value == 10.0
     assert isinstance(s.value, float)
     assert s.kind is MetricKind.COUNTER
@@ -31,10 +32,12 @@ def test_series_key_includes_labels():
 
 
 def test_equal_samples_are_hashable_and_equal_regardless_of_label_order():
-    a = Sample.create("x", 1, labels={"a": "1", "b": "2"},
-                      timestamp=datetime(2026, 7, 10, tzinfo=timezone.utc))
-    b = Sample.create("x", 1, labels={"b": "2", "a": "1"},
-                      timestamp=datetime(2026, 7, 10, tzinfo=timezone.utc))
+    a = Sample.create(
+        "x", 1, labels={"a": "1", "b": "2"}, timestamp=datetime(2026, 7, 10, tzinfo=timezone.utc)
+    )
+    b = Sample.create(
+        "x", 1, labels={"b": "2", "a": "1"}, timestamp=datetime(2026, 7, 10, tzinfo=timezone.utc)
+    )
     assert a == b
     assert hash(a) == hash(b)
     assert len({a, b}) == 1  # usable in a set

@@ -22,8 +22,7 @@ from infra_monitor.storage import SqliteRepository
 EXPECTED_COLUMNS = ("id", "timestamp", "name", "value", "kind", "unit", "labels")
 
 MIGRATION = (
-    Path(__file__).resolve().parents[1]
-    / "migrations" / "versions" / "0001_create_samples.py"
+    Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0001_create_samples.py"
 )
 
 
@@ -76,8 +75,7 @@ def test_both_backends_agree():
     source = MIGRATION.read_text(encoding="utf-8")
     for column in _sqlite_columns():
         assert re.search(rf"\b{re.escape(column)}\b", source), (
-            f"column {column!r} exists in SQLite but not in the PostgreSQL "
-            "migration"
+            f"column {column!r} exists in SQLite but not in the PostgreSQL " "migration"
         )
 
 

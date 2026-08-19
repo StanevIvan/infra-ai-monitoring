@@ -53,12 +53,18 @@ def collect_samples(
     out: list[Sample] = []
 
     def gauge(name: str, value: float, unit: str = "", labels=None) -> None:
-        out.append(Sample.create(name, value, kind=MetricKind.GAUGE, unit=unit,
-                                  labels=labels, timestamp=ts))
+        out.append(
+            Sample.create(
+                name, value, kind=MetricKind.GAUGE, unit=unit, labels=labels, timestamp=ts
+            )
+        )
 
     def counter(name: str, value: float, unit: str = "", labels=None) -> None:
-        out.append(Sample.create(name, value, kind=MetricKind.COUNTER, unit=unit,
-                                  labels=labels, timestamp=ts))
+        out.append(
+            Sample.create(
+                name, value, kind=MetricKind.COUNTER, unit=unit, labels=labels, timestamp=ts
+            )
+        )
 
     _collect_cpu(gauge, cpu_interval)
     _collect_memory(gauge)
@@ -107,8 +113,12 @@ def _collect_disk_usage(gauge, disk_paths: Optional[Sequence[str]]) -> None:
         except (PermissionError, OSError):
             # e.g. an empty CD-ROM drive on Windows, or a path we can't stat.
             continue
-        gauge("disk.usage.percent", _clamp_percent(usage.percent),
-              unit="percent", labels={"mount": mount})
+        gauge(
+            "disk.usage.percent",
+            _clamp_percent(usage.percent),
+            unit="percent",
+            labels={"mount": mount},
+        )
 
 
 def _collect_disk_io(counter) -> None:

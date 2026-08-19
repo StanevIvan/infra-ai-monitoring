@@ -27,15 +27,23 @@ def test_sqlite_repository_satisfies_the_interface():
         assert store.display_name == ":memory:"
 
 
-def _sample(name="cpu.percent", value=10.0, *, kind=MetricKind.GAUGE,
-            unit="percent", labels=None, when=None):
-    return Sample.create(name, value, kind=kind, unit=unit, labels=labels,
-                         timestamp=when or datetime.now(timezone.utc))
+def _sample(
+    name="cpu.percent", value=10.0, *, kind=MetricKind.GAUGE, unit="percent", labels=None, when=None
+):
+    return Sample.create(
+        name,
+        value,
+        kind=kind,
+        unit=unit,
+        labels=labels,
+        timestamp=when or datetime.now(timezone.utc),
+    )
 
 
 def test_save_and_get_recent_round_trip(storage):
-    original = _sample("net.bytes_sent", 2048, kind=MetricKind.COUNTER,
-                       unit="bytes", labels={"interface": "eth0"})
+    original = _sample(
+        "net.bytes_sent", 2048, kind=MetricKind.COUNTER, unit="bytes", labels={"interface": "eth0"}
+    )
     storage.save(original)
 
     recent = storage.get_recent(10)
@@ -65,11 +73,13 @@ def test_get_recent_orders_newest_first(storage):
 
 
 def test_query_filters_by_name(storage):
-    storage.save_many([
-        _sample("cpu.percent", 1.0),
-        _sample("mem.percent", 2.0),
-        _sample("cpu.percent", 3.0),
-    ])
+    storage.save_many(
+        [
+            _sample("cpu.percent", 1.0),
+            _sample("mem.percent", 2.0),
+            _sample("cpu.percent", 3.0),
+        ]
+    )
     cpu = storage.query(name="cpu.percent")
     assert {s.value for s in cpu} == {1.0, 3.0}
 
@@ -78,8 +88,7 @@ def test_query_filters_by_time_window(storage):
     base = datetime(2026, 7, 10, 9, 0, 0, tzinfo=timezone.utc)
     for i in range(5):
         storage.save(_sample("cpu.percent", float(i), when=base + timedelta(minutes=i)))
-    window = storage.query(since=base + timedelta(minutes=1),
-                           until=base + timedelta(minutes=3))
+    window = storage.query(since=base + timedelta(minutes=1), until=base + timedelta(minutes=3))
     assert sorted(s.value for s in window) == [1.0, 2.0, 3.0]
 
 

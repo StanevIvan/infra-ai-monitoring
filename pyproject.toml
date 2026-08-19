@@ -21,6 +21,7 @@ postgres = [
 ]
 dev = [
     "pytest>=8.0",
+    "mypy>=1.8",
     "pytest-cov>=5.0",
     "black>=24.0",
     "ruff>=0.5",
@@ -42,3 +43,13 @@ line-length = 100
 
 [tool.black]
 line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+# Start pragmatic: catch real type errors without demanding annotations
+# everywhere. Tighten (disallow_untyped_defs, strict) once CI is green.
+ignore_missing_imports = true
+warn_redundant_casts = true
+# NOT warn_unused_ignores: psycopg is an optional dependency, so the
+# `type: ignore` on its fallback import is needed when psycopg is installed
+# and looks unused when it is not. The flag would flip between environments.

@@ -23,8 +23,14 @@ def _snapshot(ts=T0, sent=1000):
     return [
         Sample.create("cpu.percent", 12.5, unit="percent", timestamp=ts),
         Sample.create("mem.used", 8_000_000_000, unit="bytes", timestamp=ts),
-        Sample.create("net.bytes_sent", sent, kind=MetricKind.COUNTER,
-                      unit="bytes", labels={"interface": "eth0"}, timestamp=ts),
+        Sample.create(
+            "net.bytes_sent",
+            sent,
+            kind=MetricKind.COUNTER,
+            unit="bytes",
+            labels={"interface": "eth0"},
+            timestamp=ts,
+        ),
     ]
 
 
@@ -37,8 +43,8 @@ def test_human_bytes():
 def test_format_report_groups_and_shows_values():
     report = format_report(_snapshot(), "metrics.db")
     assert "Infrastructure Monitoring Report" in report
-    assert "12.5%" in report          # gauge percent
-    assert "7.5 GB" in report         # gauge bytes (8e9 / 1024^3)
+    assert "12.5%" in report  # gauge percent
+    assert "7.5 GB" in report  # gauge bytes (8e9 / 1024^3)
     assert "net.bytes_sent" in report
     assert "interface=eth0" in report  # label rendered
     assert "Samples:  3" in report
@@ -85,8 +91,10 @@ def test_continuous_loops_until_ctrlc(tmp_path, capsys):
         if calls["n"] >= 3:
             raise KeyboardInterrupt
 
-    with patch("infra_monitor.cli.collect_samples", return_value=_snapshot()), \
-         patch("infra_monitor.cli.time.sleep", side_effect=fake_sleep):
+    with (
+        patch("infra_monitor.cli.collect_samples", return_value=_snapshot()),
+        patch("infra_monitor.cli.time.sleep", side_effect=fake_sleep),
+    ):
         code = main(["--db", str(db), "--interval", "1"])
     out = capsys.readouterr().out
     assert code == 130
@@ -120,6 +128,7 @@ def test_cli_db_flag_overrides_environment():
     from infra_monitor.config import Settings
 
     args = build_parser().parse_args(["--db", "/from/cli.db"])
-    settings = Settings.from_env({"INFRA_MONITOR_SQLITE_PATH": "/from/env.db"},
-                                 db_backend=args.backend, sqlite_path=args.db)
+    settings = Settings.from_env(
+        {"INFRA_MONITOR_SQLITE_PATH": "/from/env.db"}, db_backend=args.backend, sqlite_path=args.db
+    )
     assert settings.sqlite_path == "/from/cli.db"

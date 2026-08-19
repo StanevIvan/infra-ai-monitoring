@@ -93,7 +93,7 @@ def parse_dotenv(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()

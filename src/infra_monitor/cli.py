@@ -223,8 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Take a single snapshot and exit, instead of monitoring "
-        "continuously until Ctrl+C.",
+        help="Take a single snapshot and exit, instead of monitoring " "continuously until Ctrl+C.",
     )
     parser.add_argument(
         "--interval",

@@ -1,5 +1,7 @@
 # Infrastructure AI Monitoring Platform
 
+[![CI](https://github.com/StanevIvan/infra-ai-monitoring/actions/workflows/ci.yml/badge.svg)](https://github.com/StanevIvan/infra-ai-monitoring/actions/workflows/ci.yml)
+
 A small infrastructure monitoring system, built incrementally, that collects
 system metrics, stores them, and (starting later in the roadmap) uses simple
 ML techniques to flag anomalies automatically.

@@ -36,7 +36,8 @@ T0 = datetime(2026, 7, 10, 9, 0, 0, tzinfo=timezone.utc)
 
 def _sample(name="net.bytes_sent", value=2048.0, **kw):
     return Sample.create(
-        name, value,
+        name,
+        value,
         kind=kw.get("kind", MetricKind.COUNTER),
         unit=kw.get("unit", "bytes"),
         labels=kw.get("labels", {"interface": "eth0"}),
@@ -46,14 +47,15 @@ def _sample(name="net.bytes_sent", value=2048.0, **kw):
 
 # --- pure: parameter binding ----------------------------------------------
 
+
 def test_to_params_order_and_types():
     params = to_params(_sample(), json_adapter=dict)
-    assert params[0] == T0                 # datetime passed through, not a string
+    assert params[0] == T0  # datetime passed through, not a string
     assert params[1] == "net.bytes_sent"
     assert params[2] == 2048.0
-    assert params[3] == "counter"          # enum value, not the enum
+    assert params[3] == "counter"  # enum value, not the enum
     assert params[4] == "bytes"
-    assert params[5] == {"interface": "eth0"}   # dict for JSONB, not JSON text
+    assert params[5] == {"interface": "eth0"}  # dict for JSONB, not JSON text
 
 
 def test_to_params_applies_the_json_adapter():
@@ -68,6 +70,7 @@ def test_to_params_empty_labels():
 
 
 # --- pure: row mapping ----------------------------------------------------
+
 
 def test_row_to_sample_round_trip():
     row = (T0, "net.bytes_sent", 2048.0, "counter", "bytes", {"interface": "eth0"})
@@ -84,6 +87,7 @@ def test_row_to_sample_handles_null_labels():
 
 
 # --- pure: query building -------------------------------------------------
+
 
 def test_build_query_no_filters():
     sql, params = build_query(limit=10)
@@ -148,7 +152,8 @@ def _live_sample(name: str, value: float = 1.0) -> Sample:
     the newest row in a database that already holds data from earlier runs.
     """
     return Sample.create(
-        name, value,
+        name,
+        value,
         kind=MetricKind.COUNTER,
         unit="bytes",
         labels={"interface": "eth0"},
@@ -182,11 +187,13 @@ def test_save_and_get_recent_round_trip():
 def test_save_many_and_query_by_name():
     name_a, name_b = _unique("pg.test.a"), _unique("pg.test.b")
     with _repo() as repo:
-        repo.save_many([
-            _live_sample(name_a, 1.0),
-            _live_sample(name_a, 2.0),
-            _live_sample(name_b, 3.0),
-        ])
+        repo.save_many(
+            [
+                _live_sample(name_a, 1.0),
+                _live_sample(name_a, 2.0),
+                _live_sample(name_b, 3.0),
+            ]
+        )
         rows = repo.query(name=name_a, limit=100)
     # Names are unique to this run, so the match is exact, not a superset.
     assert {r.value for r in rows} == {1.0, 2.0}

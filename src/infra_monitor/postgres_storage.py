@@ -192,18 +192,16 @@ class PostgresRepository:
         """Persist a single Sample, atomically."""
         # NOTE: `with self._conn.transaction():`, never `with self._conn:`.
         # See the class docstring - the latter closes the connection.
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.execute(_INSERT_SQL, to_params(sample))
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(_INSERT_SQL, to_params(sample))
 
     def save_many(self, samples: Iterable[Sample]) -> int:
         """Persist many Samples in one transaction; return the count."""
         rows = [to_params(s) for s in samples]
         if not rows:
             return 0
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.executemany(_INSERT_SQL, rows)
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.executemany(_INSERT_SQL, rows)
         return len(rows)
 
     def get_recent(self, limit: int = 50) -> list[Sample]:

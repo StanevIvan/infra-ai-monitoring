@@ -233,17 +233,22 @@ def test_write_then_read_then_write_interleaved():
 
 def test_failed_write_rolls_back_and_keeps_connection_usable():
     """A constraint violation must roll back without killing the session."""
+    psycopg = pytest.importorskip("psycopg")
     with _repo() as repo:
-        try:
-            # value is NOT NULL; passing None must fail at the database.
-            with repo._conn.transaction(), repo._conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO samples (timestamp, name, value, kind, unit) "
-                    "VALUES (%s, %s, %s, %s, %s);",
-                    (T0, "pg.test.bad", None, "gauge", ""),
-                )
-        except Exception as e:  # expected
-            pass
+        # value is NOT NULL, so this insert must be rejected by the database.
+        # pytest.raises both narrows the exception type and *asserts* the
+        # failure happens - the previous try/except/pass would have passed
+        # silently if the constraint were ever dropped.
+        with (
+            pytest.raises(psycopg.Error),
+            repo._conn.transaction(),
+            repo._conn.cursor() as cur,
+        ):
+            cur.execute(
+                "INSERT INTO samples (timestamp, name, value, kind, unit) "
+                "VALUES (%s, %s, %s, %s, %s);",
+                (T0, "pg.test.bad", None, "gauge", ""),
+            )
         # The connection must still be usable after the rollback.
         assert not repo._conn.closed
         marker = _unique("pg.test.after_rollback")

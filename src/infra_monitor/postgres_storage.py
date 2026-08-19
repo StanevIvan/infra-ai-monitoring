@@ -29,20 +29,36 @@ a clear installation error.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from infra_monitor.config import redact_dsn
 from infra_monitor.models import MetricKind, Sample, normalize_labels
 
-try:  # pragma: no cover - exercised by the absence/presence of the driver
+
+def _identity(value: Any) -> Any:
+    """Return the value unchanged.
+
+    Stands in for psycopg's JSONB wrapper when the driver is absent, so the
+    pure helpers below remain importable and testable without it.
+    """
+    return value
+
+
+# The driver is an optional dependency. Note that we never rebind ``Jsonb``
+# itself: assigning None over an imported *class* is an error mypy reports as
+# "Cannot assign to a type", and testing a class for truthiness trips
+# "truthy-function". Resolving a separate adapter callable here avoids both,
+# and keeps the availability check an explicit boolean.
+try:  # pragma: no cover - depends on which extras are installed
     import psycopg
     from psycopg.types.json import Jsonb
 
     PSYCOPG_AVAILABLE = True
+    _DEFAULT_JSON_ADAPTER: Callable[[Any], Any] = Jsonb
 except ImportError:  # pragma: no cover
     psycopg = None  # type: ignore[assignment]
-    Jsonb = None  # type: ignore[assignment]
     PSYCOPG_AVAILABLE = False
+    _DEFAULT_JSON_ADAPTER = _identity
 
 
 INSTALL_HINT = (
@@ -75,14 +91,14 @@ SELECT EXISTS (
 """
 
 
-def to_params(sample: Sample, json_adapter: Any = None) -> tuple:
+def to_params(sample: Sample, json_adapter: Optional[Callable[[Any], Any]] = None) -> tuple:
     """Convert a Sample into positional query parameters.
 
     ``labels`` is wrapped for JSONB adaptation. The wrapper is injectable so
     this stays a pure function that can be tested without psycopg installed;
-    in production it is ``psycopg.types.json.Jsonb``.
+    in production it resolves to ``psycopg.types.json.Jsonb``.
     """
-    adapt = json_adapter if json_adapter is not None else (Jsonb or (lambda v: v))
+    adapt = json_adapter if json_adapter is not None else _DEFAULT_JSON_ADAPTER
     return (
         sample.timestamp,  # psycopg adapts datetime -> TIMESTAMPTZ
         sample.name,

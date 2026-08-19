@@ -18,14 +18,16 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # Postgres is checked out fresh for every run and is reachable only from
-  # inside the job, so this password is not a secret and deliberately lives
-  # in plain sight. Real credentials arrive with cloud deploys in Month 3 and
-  # will come from GitHub Secrets / OIDC, never from this file.
-  POSTGRES_USER: infra
-  POSTGRES_PASSWORD: ci_ephemeral_not_a_secret
-  POSTGRES_DB: infra
+# NOTE: there is deliberately no workflow-level `env:` block for the database
+# credentials. The `env` context is NOT available inside a job's `services:`
+# section - service containers are configured before job env is evaluated -
+# so referencing the env context there fails the run with
+# "Unrecognized named-value: 'env'". The values are written literally in both
+# places instead.
+#
+# They are safe in plain sight: the Postgres container is created fresh for
+# each run and reachable only from inside that job. Real credentials arrive
+# with cloud deploys in Month 3, from GitHub Secrets / OIDC, never this file.
 
 jobs:
   lint:
@@ -78,10 +80,12 @@ jobs:
     services:
       postgres:
         image: postgres:16-alpine
+        # Literal values: the `env` context is not usable here (see the note
+        # above the jobs block).
         env:
-          POSTGRES_USER: ${{ env.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: infra
+          POSTGRES_PASSWORD: ci_ephemeral_not_a_secret
+          POSTGRES_DB: infra
         ports:
           - 5432:5432
         # The job waits for this to report healthy before running any step,

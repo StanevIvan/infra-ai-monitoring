@@ -236,15 +236,14 @@ def test_failed_write_rolls_back_and_keeps_connection_usable():
     with _repo() as repo:
         try:
             # value is NOT NULL; passing None must fail at the database.
-            with repo._conn.transaction():
-                with repo._conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO samples (timestamp, name, value, kind, unit) "
-                        "VALUES (%s, %s, %s, %s, %s);",
-                        (T0, "pg.test.bad", None, "gauge", ""),
-                    )
-        except Exception:
-            pass  # expected
+            with repo._conn.transaction(), repo._conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO samples (timestamp, name, value, kind, unit) "
+                    "VALUES (%s, %s, %s, %s, %s);",
+                    (T0, "pg.test.bad", None, "gauge", ""),
+                )
+        except Exception as e:  # expected
+            pass
         # The connection must still be usable after the rollback.
         assert not repo._conn.closed
         marker = _unique("pg.test.after_rollback")
